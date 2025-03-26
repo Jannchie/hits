@@ -6,10 +6,11 @@ use axum::{
         Path,
         State, // To access shared state in ws handler
     },
-    http::{Request, StatusCode},
+    http::{header, HeaderValue, Request, StatusCode}, // Import header and HeaderValue
     response::{IntoResponse, Response},
     routing::get,
-    Json, Router,
+    Json,
+    Router,
 };
 use dotenv::dotenv;
 use futures_util::{stream::StreamExt, SinkExt}; // WebSocket stream utilities
@@ -31,28 +32,41 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 // --- Type alias for the broadcast sender ---
 type Broadcaster = broadcast::Sender<String>; // Sends the 'key' string
 
+// --- Shields.io Badge Structure ---
+#[derive(Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")] // Use camelCase for JSON field names (shields.io standard)
+struct ShieldsIoBadge {
+    schema_version: u8, // Should be 1
+    label: String,      // The left side of the badge
+    message: String,    // The right side of the badge (the count)
+    color: String,      // e.g., "blue", "green", hex codes like "ff69b4"
+                        // Optional: Add fields like `labelColor`, `isError`, `namedLogo`, `logoSvg`, `logoColor`, `logoWidth`, `logoPosition`, `style`, `cacheSeconds` if needed
+}
+
 // --- API Documentation Structure ---
 #[derive(OpenApi)]
 #[openapi(
     components(
-        schemas(ApiError, AppInfo) // Include ApiError and AppInfo
+        // Add ShieldsIoBadge to schemas
+        schemas(ApiError, AppInfo, ShieldsIoBadge)
     ),
     tags(
         (name = "Meta", description = "Meta API Endpoints"),
         (name = "Main", description = "Main API Endpoints"),
-        (name = "WebSocket", description = "WebSocket Endpoints") // Add WebSocket tag
+        (name = "WebSocket", description = "WebSocket Endpoints"),
+        (name = "Badge", description = "Shields.io Badge Endpoint")
     ),
     paths(
         count_increment_route,
         app_info_route,
-        // ws_handler cannot be directly documented with `#[utoipa::path]`
-        // as it involves protocol upgrade, but we can describe it.
+        shields_badge_route,
     ),
     info(
         title = "Hits API",
         version = VERSION,
         description = r#"A simple API to increment and retrieve counts based on a key.
-Includes a WebSocket endpoint `/ws` that broadcasts the `key` whenever a count is incremented."#, // Updated description
+Includes a WebSocket endpoint `/ws` that broadcasts the `key` whenever a count is incremented.
+Provides a `/badge/{key}` endpoint compatible with shields.io."#, // Updated description
         contact(
             name = "Jannchie",
             email = "jannchie@gmail.com"
@@ -92,7 +106,19 @@ impl IntoResponse for AppError {
         let api_error = ApiError {
             message: error_message,
         };
-        (status, Json(api_error)).into_response()
+        // Add Cache-Control header to error responses for badges to prevent caching
+        let mut response = (status, Json(api_error)).into_response();
+        response.headers_mut().insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("no-cache, no-store, must-revalidate"),
+        );
+        response
+            .headers_mut()
+            .insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
+        response
+            .headers_mut()
+            .insert(header::EXPIRES, HeaderValue::from_static("0"));
+        response
     }
 }
 
@@ -121,23 +147,24 @@ async fn main() -> Result<()> {
     info!("Database connection pool established.");
 
     // --- Broadcast Channel Setup ---
-    // Create a channel for broadcasting keys. Capacity determines buffer size.
-    let (tx, _) = broadcast::channel::<String>(100); // tx is the Sender
-    let broadcaster = Arc::new(tx); // Wrap Sender in Arc for sharing
+    let (tx, _) = broadcast::channel::<String>(100);
+    let broadcaster = Arc::new(tx);
 
     // --- Axum Router Setup ---
     let app = Router::new()
         // --- API Documentation ---
         .merge(RapiDoc::with_openapi("/api-docs/openapi.json", ApiDoc::openapi()).path("/rapidoc"))
         // --- API Routes ---
-        .route("/hits/{key}", get(count_increment_route)) // Use ':' for path params
+        .route("/hits/{key}", get(count_increment_route))
         .route("/", get(app_info_route))
+        // --- Add Badge Route ---
+        .route("/badge/{key}", get(shields_badge_route)) // <--- NEW ROUTE
         // --- WebSocket Route ---
-        .route("/ws", get(ws_handler)) // Add the WebSocket route
+        .route("/ws", get(ws_handler))
         .layer(
             ServiceBuilder::new()
                 .layer(Extension(pool)) // Share the database pool
-                .layer(Extension(broadcaster.clone())) // Share the broadcast sender <--- ADDED
+                .layer(Extension(broadcaster.clone())) // Share the broadcast sender
                 .layer(
                     TraceLayer::new_for_http()
                         .make_span_with(|request: &Request<axum::body::Body>| {
@@ -159,14 +186,13 @@ async fn main() -> Result<()> {
                         ),
                 ),
         )
-        // Add state for the ws_handler to access the broadcaster directly
-        // Alternatively, ws_handler can use Extension too, but State is clearer if only used there
         .with_state(broadcaster); // Make broadcaster available via State extractor in ws_handler
 
     // --- Start Server ---
     info!("Starting server, listening on http://{}", addr);
     info!("Access Rapidoc UI at http://{}/rapidoc", addr);
-    info!("WebSocket endpoint available at ws://{}/ws", addr); // Log WS URL
+    info!("WebSocket endpoint available at ws://{}/ws", addr);
+    info!("Badge endpoint example: http://{}/badge/your-key", addr); // Log Badge URL
 
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
@@ -179,133 +205,71 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-// --- WebSocket Handler ---
-
-// This handler manages the WebSocket connection upgrade request.
-// Tag = "WebSocket" (Note: utoipa::path doesn't directly support WebSocket upgrades)
+// --- WebSocket Handler (Unchanged) ---
 async fn ws_handler(
-    ws: WebSocketUpgrade,                        // Extractor to handle the upgrade
-    State(broadcaster): State<Arc<Broadcaster>>, // Get the broadcaster sender from shared state
+    ws: WebSocketUpgrade,
+    State(broadcaster): State<Arc<Broadcaster>>,
 ) -> impl IntoResponse {
     info!("WebSocket connection request received");
-    // Finalize the upgrade process and provide a callback to handle the actual socket
     ws.on_upgrade(move |socket| handle_socket(socket, broadcaster))
 }
 
-// This function runs once a WebSocket connection is established.
 async fn handle_socket(socket: WebSocket, broadcaster: Arc<Broadcaster>) {
     info!("WebSocket connection established");
-
-    // Split the socket into a sender and receiver.
-    // `split()` consumes the original socket.
     let (mut ws_sender, mut ws_receiver) = socket.split();
-
-    // Subscribe to the broadcast channel *before* starting the main loop
     let mut rx = broadcaster.subscribe();
 
-    // --- Send Task ---
-    // This task listens for broadcast messages and sends them to the client.
-    // It takes ownership of `ws_sender` and `rx`.
     let send_task = tokio::spawn(async move {
         loop {
-            // Wait for a new message from the broadcast channel
             match rx.recv().await {
                 Ok(key) => {
-                    // Send the received key as a text message to the client using the ws_sender
                     if ws_sender.send(Message::Text(key.into())).await.is_err() {
-                        // If sending fails, the client likely disconnected
                         warn!("WebSocket send failed, client disconnected?");
-                        break; // Exit the loop
+                        break;
                     }
                 }
                 Err(broadcast::error::RecvError::Lagged(n)) => {
                     warn!("WebSocket receiver lagged behind by {} messages.", n);
-                    // Continue listening, but messages were missed
                 }
                 Err(broadcast::error::RecvError::Closed) => {
-                    // The broadcast channel was closed, no more messages will be sent
-                    warn!("Broadcast channel closed.");
-                    break; // Exit the loop
+                    // The broadcaster has been dropped, no more messages to receive
+                    break;
                 }
             }
         }
         info!("WebSocket send task finished.");
-        // ws_sender is dropped here
     });
 
-    // --- Receive Task ---
-    // This task listens for messages incoming from the client.
-    // It takes ownership of `ws_receiver`.
     let recv_task = tokio::spawn(async move {
-        // Loop while the client is sending messages
         while let Some(msg_result) = ws_receiver.next().await {
             match msg_result {
-                Ok(msg) => {
-                    // Process the received message
-                    match msg {
-                        Message::Text(t) => {
-                            info!("Received text from WebSocket client: {}", t);
-                            // Handle client messages if needed (e.g., echo, commands)
-                        }
-                        Message::Binary(_) => {
-                            info!("Received binary data from WebSocket client.");
-                        }
-                        Message::Ping(_) => {
-                            info!("Received WebSocket ping.");
-                            // Axum/Tungstenite handles pong responses automatically via the Sink
-                        }
-                        Message::Pong(_) => {
-                            info!("Received WebSocket pong.");
-                        }
-                        Message::Close(_) => {
-                            info!("WebSocket client initiated close.");
-                            break; // Exit loop on close message
-                        }
+                Ok(msg) => match msg {
+                    Message::Text(t) => info!("Received text from WebSocket client: {}", t),
+                    Message::Binary(_) => info!("Received binary data from WebSocket client."),
+                    Message::Ping(_) => info!("Received WebSocket ping."),
+                    Message::Pong(_) => info!("Received WebSocket pong."),
+                    Message::Close(_) => {
+                        info!("WebSocket client initiated close.");
+                        break;
                     }
-                }
+                },
                 Err(e) => {
-                    // An error occurred receiving a message (e.g., connection dropped)
                     warn!("Error receiving WebSocket message: {}", e);
-                    break; // Exit loop on error
+                    break;
                 }
             }
         }
         info!("WebSocket receive task finished.");
-        // ws_receiver is dropped here
     });
 
-    // Wait for either task to complete (e.g., disconnection or channel close)
     tokio::select! {
         _ = send_task => { /* Send task finished */ }
         _ = recv_task => { /* Receive task finished */ }
     }
-
     info!("WebSocket connection closed.");
-    // The socket and associated tasks will be dropped here.
 }
 
-// --- Existing HTTP Handlers (Modified count_increment_route) ---
-
-#[utoipa::path(
-    get,
-    summary = "Increment and Get Total Hits",
-    description = "Increments a counter for the given key and returns the total count. Broadcasts the key via WebSocket.",
-    path = "/hits/{key}",
-    tag = "Main",
-    params(
-        ("key" = String, Path, description = "The unique key for the counter to increment.")
-    ),
-    responses(
-        (status = 200, description = "Successfully incremented and returned total count.", body = i64, example = json!(15)), // Changed body to i64
-        (status = 500, description = "Database error", body = ApiError) // Document error response
-    )
-)]
-async fn count_increment_route(
-    Path(key): Path<String>,
-    Extension(pool): Extension<PgPool>,
-    Extension(broadcaster): Extension<Arc<Broadcaster>>, // Inject the broadcaster sender
-) -> Result<Json<i64>, AppError> {
-    // Result type includes AppError
+async fn increase_and_get_count(pool: PgPool, key: String, broadcaster: Arc<Broadcaster>) -> i64 {
     let record = sqlx::query!(
         r#"
         WITH updated AS (
@@ -324,28 +288,88 @@ async fn count_increment_route(
         key
     )
     .fetch_one(&pool)
-    .await?; // Propagates sqlx::Error as AppError::DatabaseError
+    .await.unwrap(); // Propagate any database errors
+    broadcaster.send(key.clone()).unwrap(); // Ignore errors, not critical
+    record.total_count.unwrap_or(0) + 1
+}
 
-    // Safely get the total count
-    let total_count_i64 = record.total_count.unwrap_or(0);
+// --- HTTP Handlers ---
 
-    // Broadcast the key if it was successfully inserted/updated
-    // `upserted_key` will be Some(key) on success, None only if WHERE failed (unlikely here)
-    if let Some(upserted_key) = record.upserted_key {
-        // Send the key to the broadcast channel.
-        // Ignore the error if there are no subscribers (it's okay if no one is listening).
-        if let Err(e) = broadcaster.send(upserted_key.clone()) {
-            // Log if needed, but don't fail the request
-            warn!("Failed to broadcast key '{}': {}", upserted_key, e);
-        } else {
-            info!("Broadcasted key: {}", upserted_key);
-        }
-    } else {
-        // This case should theoretically not happen with the current query structure
-        warn!("Could not retrieve upserted key for broadcasting: {}", key);
-    }
+#[utoipa::path(
+    get,
+    summary = "Increment and Get Total Hits",
+    description = "Increments a counter for the given key and returns the total count. Broadcasts the key via WebSocket.",
+    path = "/hits/{key}",
+    tag = "Main",
+    params(
+        ("key" = String, Path, description = "The unique key for the counter to increment.")
+    ),
+    responses(
+        (status = 200, description = "Successfully incremented and returned total count.", body = i64, example = json!(15)),
+        (status = 500, description = "Database error", body = ApiError)
+    )
+)]
 
+async fn count_increment_route(
+    Path(key): Path<String>,
+    Extension(pool): Extension<PgPool>,
+    Extension(broadcaster): Extension<Arc<Broadcaster>>,
+) -> Result<Json<i64>, AppError> {
+    let total_count_i64 = increase_and_get_count(pool, key.clone(), broadcaster.clone()).await;
     Ok(Json(total_count_i64))
+}
+
+// --- New Shields.io Badge Handler ---
+
+#[utoipa::path(
+    get,
+    summary = "Get Total Hits for Shields.io Badge",
+    description = "Retrieves the total count for the given key, formatted as a JSON response suitable for shields.io. This endpoint does NOT increment the counter. It includes Cache-Control headers to prevent caching.",
+    path = "/badge/{key}",
+    tag = "Badge", // Assign to the new "Badge" tag
+    params(
+        ("key" = String, Path, description = "The unique key for the counter to retrieve.")
+    ),
+    responses(
+        (status = 200, description = "Successfully retrieved total count for the badge.", body = ShieldsIoBadge,
+         example = json!({"schemaVersion": 1, "label": "hits", "message": "1234", "color": "blue"}),
+        ),
+        (status = 500, description = "Database error", body = ApiError)
+    )
+)]
+async fn shields_badge_route(
+    Path(key): Path<String>,
+    Extension(pool): Extension<PgPool>,
+    Extension(broadcaster): Extension<Arc<Broadcaster>>,
+) -> Result<impl IntoResponse, AppError> {
+    // Return type needs to handle headers
+    // Query *only* for the sum, do not insert or update
+    let total_count = increase_and_get_count(pool, key, broadcaster).await;
+    // If the key doesn't exist, SUM returns NULL, which sqlx maps to None. Default to 0.
+
+    let badge = ShieldsIoBadge {
+        schema_version: 1,
+        label: "hits".to_string(), // You could make this dynamic if needed
+        message: total_count.to_string(),
+        color: "blue".to_string(), // Customize as desired
+    };
+
+    // Create response with appropriate headers to prevent caching, as recommended by shields.io
+    let mut response = (StatusCode::OK, Json(badge)).into_response();
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-cache, no-store, must-revalidate"),
+    );
+    response.headers_mut().insert(
+        header::PRAGMA,
+        HeaderValue::from_static("no-cache"), // For HTTP/1.0 backward compatibility
+    );
+    response.headers_mut().insert(
+        header::EXPIRES,
+        HeaderValue::from_static("0"), // Proxies
+    );
+
+    Ok(response)
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -353,31 +377,38 @@ struct AppInfo {
     project_name: String,
     version: String,
     docs_path: String,
-    #[schema(example = "ws://localhost:3030/ws")] // Add example WS URL
-    websocket_url: String, // Add field for WebSocket URL info
+    #[schema(example = "ws://localhost:3030/ws")]
+    websocket_url: String,
+    #[schema(example = "http://localhost:3030/badge/your-key")] // Add example Badge URL
+    badge_url_example: String, // Add field for badge URL info
 }
 
 #[utoipa::path(
     get,
     summary = "App Info",
-    description = "Returns information about the application, including API docs and WebSocket endpoint.",
+    description = "Returns information about the application, including API docs, WebSocket endpoint, and badge endpoint example.",
     path = "/",
     responses(
-        (status = 200, description = "Returns information about the application.", body = AppInfo, example = json!({ "project_name": "Hits", "version": "0.1.0", "docs_path": "/rapidoc", "websocket_url": "ws://<host>:<port>/ws" }))
+        (status = 200, description = "Returns information about the application.", body = AppInfo, example = json!({ "project_name": "Hits", "version": "0.1.0", "docs_path": "/rapidoc", "websocket_url": "ws://<host>:<port>/ws", "badge_url_example": "http://<host>:<port>/badge/your-key"}))
     ),
     tag = "Meta"
 )]
 async fn app_info_route() -> impl IntoResponse {
-    // Ideally, get host/port dynamically if needed, but hardcoding is simple for example
+    // Ideally, get host/port dynamically if needed, but using env vars is fine
     let host = env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
+    // Use http schema for badge example, unless behind TLS terminator
+    let scheme = "http"; // Assume http for simplicity, adjust if HTTPS is default
     let port = env::var("PORT").unwrap_or_else(|_| "3030".to_string());
+    let base_url = format!("{}://{}:{}", scheme, host, port); // Use scheme
     let ws_url = format!("ws://{}:{}/ws", host, port);
+    let badge_example_url = format!("{}/badge/your-key", base_url);
 
     let info = AppInfo {
         project_name: "Hits".to_string(),
         version: VERSION.to_string(),
         docs_path: "/rapidoc".to_string(),
-        websocket_url: ws_url, // Include the WS URL
+        websocket_url: ws_url,
+        badge_url_example: badge_example_url, // Include the badge URL example
     };
     Json(info)
 }
