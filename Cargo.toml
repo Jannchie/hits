@@ -1,13 +1,14 @@
 [package]
-name = "hiter"
+name = "hits"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 anyhow = "1.0.97"
-axum = "0.8.1"
+axum = { version = "0.8.1", features = ["ws"] }
 chrono = "0.4.40"
 dotenv = "0.15.0"
+futures-util = "0.3.31"
 serde = "1.0.219"
 sqlx = { version = "0.8.3", features = [
     "runtime-tokio-native-tls",
