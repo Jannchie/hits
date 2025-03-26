@@ -130,10 +130,10 @@ async fn main() -> Result<()> {
         // --- API Documentation ---
         .merge(RapiDoc::with_openapi("/api-docs/openapi.json", ApiDoc::openapi()).path("/rapidoc"))
         // --- API Routes ---
-        .route("/count/{key}", get(count_increment_route)) // Use ':' for path params
+        .route("/hits/{key}", get(count_increment_route)) // Use ':' for path params
         .route("/", get(app_info_route))
         // --- WebSocket Route ---
-        .route("/ws", get(ws_handler)) // Add the WebSocket route
+        .route("/", get(ws_handler)) // Add the WebSocket route
         .layer(
             ServiceBuilder::new()
                 .layer(Extension(pool)) // Share the database pool
@@ -288,9 +288,9 @@ async fn handle_socket(socket: WebSocket, broadcaster: Arc<Broadcaster>) {
 
 #[utoipa::path(
     get,
-    summary = "Increment and Get Total Count",
+    summary = "Increment and Get Total Hits",
     description = "Increments a counter for the given key and returns the total count. Broadcasts the key via WebSocket.",
-    path = "/count/{key}",
+    path = "/hits/{key}",
     tag = "Main",
     params(
         ("key" = String, Path, description = "The unique key for the counter to increment.")
