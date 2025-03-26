@@ -25,3 +25,9 @@ sqlx migrate run
 # run the server
 cargo run
 ```
+
+## Build Docker Image
+
+```bash
+docker build -t jannchie/hits .
+```

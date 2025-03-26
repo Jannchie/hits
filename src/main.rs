@@ -289,7 +289,7 @@ async fn increase_and_get_count(pool: PgPool, key: String, broadcaster: Arc<Broa
     )
     .fetch_one(&pool)
     .await.unwrap(); // Propagate any database errors
-    broadcaster.send(key.clone()).unwrap(); // Ignore errors, not critical
+    broadcaster.send(key.clone()).ok(); // Ignore errors
     record.total_count.unwrap_or(0) + 1
 }
 
