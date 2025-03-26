@@ -1,5 +1,7 @@
 # Hits
 
+![Endpoint Badge](https://img.shields.io/endpoint?url=https%3A%2F%2Fhits.jannchie.com%2Fbadge%2Fjannchie.hits)
+
 A Simple Rust Web Server Application that counts the number of hits on any keys.
 
 Based on Axum, SQLx, and Postgres.
