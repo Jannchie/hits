@@ -6,7 +6,7 @@ use axum::{
         Path,
         State, // To access shared state in ws handler
     },
-    http::{header, HeaderValue, Request, StatusCode}, // Import header and HeaderValue
+    http::{header, HeaderMap, HeaderValue, Request, StatusCode}, // Import header and HeaderValue
     response::{IntoResponse, Response},
     routing::get,
     Json,
@@ -60,6 +60,7 @@ struct ShieldsIoBadge {
         count_increment_route,
         app_info_route,
         shields_badge_route,
+        direct_svg_badge_route,
     ),
     info(
         title = "Hits API",
@@ -158,7 +159,8 @@ async fn main() -> Result<()> {
         .route("/hits/{key}", get(count_increment_route))
         .route("/", get(app_info_route))
         // --- Add Badge Route ---
-        .route("/badge/{key}", get(shields_badge_route)) // <--- NEW ROUTE
+        .route("/badge/{key}", get(shields_badge_route))
+        .route("/svg/{key}", get(direct_svg_badge_route))
         // --- WebSocket Route ---
         .route("/ws", get(ws_handler))
         .layer(
@@ -372,15 +374,131 @@ async fn shields_badge_route(
     Ok(response)
 }
 
+// --- Constants for badge styling ---
+const BADGE_HEIGHT: u32 = 20;
+const HORIZONTAL_PADDING: u32 = 6; // Padding left/right of text
+const FONT_FAMILY: &str = "Verdana,Geneva,DejaVu Sans,sans-serif";
+const FONT_SIZE_SCALED: u32 = 110; // Corresponds to font-size="11" with transform="scale(.1)"
+const LABEL_COLOR: &str = "#555"; // Left side background
+const MESSAGE_COLOR: &str = "#007ec6"; // Right side background (blue)
+                                       // Rough approximation for character width in pixels for the chosen font style at font-size 11.
+                                       // This is the most inaccurate part and might need tuning or a proper font metrics library.
+const LABEL_PX_PER_CHAR: f32 = 6.5;
+const MESSAGE_PX_PER_CHAR: f32 = 7.0;
+
+/// Estimates the rendered width of a text string based on a simple character count.
+/// This is a basic approximation.
+fn estimate_text_width(text: &str, px_per_char: f32) -> u32 {
+    (text.chars().count() as f32 * px_per_char).round() as u32
+}
+
+#[utoipa::path(
+    get,
+    summary = "Get Total Hits as an SVG Badge",
+    description = "Retrieves the total count for the given key and returns it directly as an SVG badge. This endpoint *increments* the counter (based on the `increase_and_get_count` call) and includes Cache-Control headers to prevent caching.",
+    path = "/svg/{key}", // Changed path slightly to avoid conflict if needed
+    tag = "Badge",
+    params(
+        ("key" = String, Path, description = "The unique key for the counter.")
+    ),
+    responses(
+        (status = 200, description = "Successfully generated and returned the SVG badge.", content_type = "image/svg+xml", body = String), // Describe SVG output
+        (status = 500, description = "Database error or other internal error", body = ApiError) // Keep error response
+    )
+)]
+async fn direct_svg_badge_route(
+    // Renamed function
+    Path(key): Path<String>,
+    Extension(pool): Extension<PgPool>,
+    Extension(broadcaster): Extension<Arc<Broadcaster>>,
+) -> Result<impl IntoResponse, AppError> {
+    // --- 1. Get the count (and increment it, based on function name) ---
+    // If you need a *non-incrementing* version, you'll need a different DB function.
+    let total_count = increase_and_get_count(pool, key.clone(), broadcaster).await;
+
+    // --- 2. Prepare badge data ---
+    let label_text = "hits";
+    let message_text = total_count.to_string();
+    let label_color = LABEL_COLOR;
+    let message_color = MESSAGE_COLOR; // You could customize this, maybe based on count value
+
+    // --- 3. Calculate SVG dimensions based on text ---
+    let label_text_render_width = estimate_text_width(label_text, LABEL_PX_PER_CHAR);
+    let message_text_render_width = estimate_text_width(&message_text, MESSAGE_PX_PER_CHAR);
+
+    let label_rect_width = label_text_render_width + 2 * HORIZONTAL_PADDING;
+    let message_rect_width = message_text_render_width + 2 * HORIZONTAL_PADDING;
+    let total_width = label_rect_width + message_rect_width;
+
+    // Calculate text positioning (using the scaled coordinates system like shields.io)
+    // textLength attribute also uses scaled value (render_width * 10)
+    let label_x_scaled = (label_rect_width / 2) * 10;
+    let message_x_scaled = (label_rect_width + message_rect_width / 2) * 10;
+    let label_text_length_scaled = label_text_render_width * 10;
+    let message_text_length_scaled = message_text_render_width * 10;
+
+    // --- 4. Generate the SVG string ---
+    // This uses a format similar to shields.io's "flat" style
+    let svg_string = format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="{total_width}" height="{badge_height}" role="img" aria-label="{label}: {message}">
+            <title>{label}: {message}</title>
+            <linearGradient id="s" x2="0" y2="100%">
+                <stop offset="0" stop-color="#bbb" stop-opacity=".1"/>
+                <stop offset="1" stop-opacity=".1"/>
+            </linearGradient>
+            <clipPath id="r">
+                <rect width="{total_width}" height="{badge_height}" rx="3" fill="#fff"/>
+            </clipPath>
+            <g clip-path="url(#r)">
+                <rect width="{label_rect_width}" height="{badge_height}" fill="{label_color}"/>
+                <rect x="{label_rect_width}" width="{message_rect_width}" height="{badge_height}" fill="{message_color}"/>
+                <rect width="{total_width}" height="{badge_height}" fill="url(#s)"/>
+            </g>
+            <g fill="#fff" text-anchor="middle" font-family="{font_family}" text-rendering="geometricPrecision" font-size="{font_size_scaled}">
+                <text aria-hidden="true" x="{label_x_scaled}" y="150" fill="#010101" fill-opacity=".3" transform="scale(.1)" textLength="{label_text_length_scaled}">{label}</text>
+                <text x="{label_x_scaled}" y="140" transform="scale(.1)" fill="#fff" textLength="{label_text_length_scaled}">{label}</text>
+                <text aria-hidden="true" x="{message_x_scaled}" y="150" fill="#010101" fill-opacity=".3" transform="scale(.1)" textLength="{message_text_length_scaled}">{message}</text>
+                <text x="{message_x_scaled}" y="140" transform="scale(.1)" fill="#fff" textLength="{message_text_length_scaled}">{message}</text>
+            </g>
+        </svg>"##,
+        total_width = total_width,
+        badge_height = BADGE_HEIGHT,
+        label = label_text,
+        message = message_text,
+        label_rect_width = label_rect_width,
+        message_rect_width = message_rect_width,
+        label_color = label_color,
+        message_color = message_color,
+        font_family = FONT_FAMILY,
+        font_size_scaled = FONT_SIZE_SCALED,
+        label_x_scaled = label_x_scaled,
+        message_x_scaled = message_x_scaled,
+        label_text_length_scaled = label_text_length_scaled,
+        message_text_length_scaled = message_text_length_scaled,
+    );
+
+    // --- 5. Build the response with SVG content type and cache headers ---
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("image/svg+xml"),
+    );
+    // Cache prevention headers
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-cache, no-store, must-revalidate"),
+    );
+    headers.insert(header::PRAGMA, HeaderValue::from_static("no-cache")); // HTTP/1.0 backward compatibility
+    headers.insert(header::EXPIRES, HeaderValue::from_static("0")); // Proxies
+
+    Ok((StatusCode::OK, headers, svg_string))
+}
+
 #[derive(Serialize, utoipa::ToSchema)]
 struct AppInfo {
     project_name: String,
     version: String,
     docs_path: String,
-    #[schema(example = "ws://localhost:3030/ws")]
-    websocket_url: String,
-    #[schema(example = "http://localhost:3030/badge/your-key")] // Add example Badge URL
-    badge_url_example: String, // Add field for badge URL info
 }
 
 #[utoipa::path(
@@ -394,21 +512,10 @@ struct AppInfo {
     tag = "Meta"
 )]
 async fn app_info_route() -> impl IntoResponse {
-    // Ideally, get host/port dynamically if needed, but using env vars is fine
-    let host = env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
-    // Use http schema for badge example, unless behind TLS terminator
-    let scheme = "http"; // Assume http for simplicity, adjust if HTTPS is default
-    let port = env::var("PORT").unwrap_or_else(|_| "3030".to_string());
-    let base_url = format!("{}://{}:{}", scheme, host, port); // Use scheme
-    let ws_url = format!("ws://{}:{}/ws", host, port);
-    let badge_example_url = format!("{}/badge/your-key", base_url);
-
     let info = AppInfo {
         project_name: "Hits".to_string(),
         version: VERSION.to_string(),
         docs_path: "/rapidoc".to_string(),
-        websocket_url: ws_url,
-        badge_url_example: badge_example_url, // Include the badge URL example
     };
     Json(info)
 }
