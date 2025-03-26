@@ -2,7 +2,7 @@ services:
   app:
     build: .
     ports:
-      - "3030:3030"
+      - "127.0.0.1:3030:3030"
     environment:
       DATABASE_URL: "postgresql://postgres:123456@db:5432/hits"
     command: >
@@ -21,7 +21,7 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: 123456
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
 

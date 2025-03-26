@@ -2,6 +2,8 @@
 name = "hits"
 version = "0.1.0"
 edition = "2021"
+authors = ["Jannchie <jannchie@gmail.com>"]
+description = "A simple web server for counting hits."
 
 [dependencies]
 anyhow = "1.0.97"
