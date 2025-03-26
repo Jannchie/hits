@@ -133,7 +133,7 @@ async fn main() -> Result<()> {
         .route("/hits/{key}", get(count_increment_route)) // Use ':' for path params
         .route("/", get(app_info_route))
         // --- WebSocket Route ---
-        .route("/", get(ws_handler)) // Add the WebSocket route
+        .route("/ws", get(ws_handler)) // Add the WebSocket route
         .layer(
             ServiceBuilder::new()
                 .layer(Extension(pool)) // Share the database pool
