@@ -1,6 +1,6 @@
 [package]
 name = "hits"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 authors = ["Jannchie <jannchie@gmail.com>"]
 description = "A simple web server for counting hits."
