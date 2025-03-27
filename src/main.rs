@@ -13,6 +13,7 @@ use axum::{
     Json,
     Router,
 };
+use badge::{render_badge_svg, BadgeStyle, RenderBadgeParams};
 use dotenv::dotenv;
 use futures_util::{stream::StreamExt, SinkExt}; // WebSocket stream utilities
 use sqlx::postgres::PgPool;
@@ -29,6 +30,7 @@ use utoipa::OpenApi;
 use utoipa_rapidoc::RapiDoc;
 
 // --- Font Metrics Module ---
+mod badge;
 mod font_metrics;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -378,31 +380,31 @@ async fn shields_badge_route(
     Ok(response)
 }
 
-// --- Constants for badge styling ---
-const BADGE_HEIGHT: u32 = 20;
-const HORIZONTAL_PADDING: u32 = 6; // Padding left/right of text
-const FONT_FAMILY: &str = "Verdana,Geneva,DejaVu Sans,sans-serif";
-const FONT_SIZE_SCALED: u32 = 110; // Corresponds to font-size="11" with transform="scale(.1)"
-const LABEL_COLOR: &str = "#555"; // Left side background
-const MESSAGE_COLOR: &str = "#007ec6"; // Right side background (blue)
-
-// --- Struct for Query Parameters ---
-#[derive(Deserialize, Debug)]
-pub struct BadgeParams {
-    #[serde(default = "default_style")] // Provide default if missing
-    style: String,
-    // Add other potential query params here, e.g., label, labelColor, color, logo, etc.
-    // label: Option<String>,
-    // color: Option<String>,
-    // labelColor: Option<String>,
-}
-
 // Function to provide the default style value for serde
-fn default_style() -> String {
-    "flat".to_string()
+fn default_label() -> String {
+    "Hits".to_string()
 }
 
-// --- Updated UTOIPA Documentation ---
+fn default_label_color() -> String {
+    "#555".to_string()
+}
+
+fn default_message_color() -> String {
+    "#007ec6".to_string()
+}
+
+#[derive(Deserialize, Debug)]
+struct HitBadgeParams {
+    #[serde(default)]
+    style: BadgeStyle,
+    #[serde(default = "default_label")]
+    label: String,
+    #[serde(default = "default_label_color")]
+    label_color: String,
+    #[serde(default = "default_message_color")]
+    message_color: String,
+}
+
 #[utoipa::path(
     get,
     path = "/svg/{key}",
@@ -411,8 +413,10 @@ fn default_style() -> String {
     description = "Retrieves the total count for the given key, increments it, and returns it as an SVG badge. Supports different visual styles via the `style` query parameter (e.g., 'flat', 'social'). Includes Cache-Control headers.",
     params(
         ("key" = String, Path, description = "The unique key for the counter."),
-        ("style" = Option<String>, Query, description = "Optional badge style (e.g., 'flat', 'social'). Defaults to 'flat'.") // Document the style query param
-        // Add docs for other query params if you implement them
+        ("style" = Option<String>, Query, description = "Optional badge style (e.g., 'flat', 'social'). Defaults to 'flat'."),
+        ("label" = Option<String>, Query, description = "Optional label text for the badge. Defaults to 'Hits'."),
+        ("label_color" = Option<String>, Query, description = "Optional label color in hex format. Defaults to '#555'."),
+        ("message_color" = Option<String>, Query, description = "Optional message color in hex format. Defaults to '#007ec6'."),
     ),
     responses(
         (status = 200, description = "Successfully generated and returned the SVG badge.", content_type = "image/svg+xml", body = String),
@@ -420,10 +424,9 @@ fn default_style() -> String {
         (status = 500, description = "Database error or other internal error", body = ApiError)
     )
 )]
-// --- Updated Route Handler ---
 async fn direct_svg_badge_route(
     Path(key): Path<String>,
-    Query(params): Query<BadgeParams>, // Use Query extractor
+    Query(params): Query<HitBadgeParams>, // Use Query extractor with explicit lifetime
     Extension(pool): Extension<PgPool>,
     Extension(broadcaster): Extension<Arc<Broadcaster>>,
 ) -> Result<Response, AppError> {
@@ -433,29 +436,17 @@ async fn direct_svg_badge_route(
     let total_count = increase_and_get_count(pool, key.clone(), broadcaster).await;
 
     // --- 2. Determine Style and Prepare Badge Data ---
-    let style = params.style.to_lowercase(); // Use lowercase for matching
-    let label_text = "Hits"; // Could also make this a query parameter: params.label.unwrap_or("hits".to_string())
     let message_text = total_count.to_string();
-    // Colors could also be query parameters: params.color.unwrap_or(MESSAGE_COLOR.to_string())
-    let label_color = LABEL_COLOR;
-    let message_color = MESSAGE_COLOR;
+    let svg_generate_params = RenderBadgeParams {
+        style: params.style, // Default to flat style
+        label: params.label.as_str(),
+        message: message_text.as_str(),
+        label_color: params.label_color.as_str(),
+        message_color: params.message_color.as_str(),
+    };
 
     // --- 3. Generate SVG based on Style ---
-    let svg_string = match style.as_str() {
-        "social" => {
-            // Placeholder: Implement social style SVG generation
-            // You would likely need different constants and SVG structure
-            generate_social_style_svg(label_text, &message_text, label_color, message_color)
-            // Call a different generator
-        } // Add other styles like "flat-square", "plastic", etc.
-        "flat-square" => {
-            generate_flat_square_style_svg(label_text, &message_text, label_color, message_color)
-        }
-        "plastic" => {
-            generate_plastic_style_svg(label_text, &message_text, label_color, message_color)
-        }
-        _default => generate_flat_style_svg(label_text, &message_text, label_color, message_color),
-    };
+    let svg_string = render_badge_svg(svg_generate_params);
 
     // --- 4. Build the response with SVG content type and cache headers ---
     let mut headers = HeaderMap::new();
@@ -471,320 +462,6 @@ async fn direct_svg_badge_route(
     headers.insert(header::EXPIRES, HeaderValue::from_static("0"));
 
     Ok((StatusCode::OK, headers, svg_string).into_response())
-}
-
-// --- SVG Generation Function for "Flat" Style ---
-// (Extracted from your original code)
-fn generate_flat_style_svg(
-    label: &str,
-    message: &str,
-    label_color: &str,
-    message_color: &str,
-) -> String {
-    // Calculate SVG dimensions based on text using the font metrics module
-    let label_text_render_width = font_metrics::get_text_width_px(label, FONT_FAMILY);
-    let message_text_render_width = font_metrics::get_text_width_px(message, FONT_FAMILY);
-
-    let label_rect_width = label_text_render_width + 2 * HORIZONTAL_PADDING;
-    let message_rect_width = message_text_render_width + 2 * HORIZONTAL_PADDING;
-    let total_width = label_rect_width + message_rect_width;
-
-    // Calculate text positioning
-    let label_x_scaled = (label_rect_width / 2) * 10;
-    let message_x_scaled = (label_rect_width + message_rect_width / 2) * 10;
-    let label_text_length_scaled = label_text_render_width * 10;
-    let message_text_length_scaled = message_text_render_width * 10;
-
-    // Generate the SVG string
-    format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="{total_width}" height="{badge_height}" role="img" aria-label="{label}: {message}">
-            <title>{label}: {message}</title>
-            <linearGradient id="s" x2="0" y2="100%">
-                <stop offset="0" stop-color="#bbb" stop-opacity=".1"/>
-                <stop offset="1" stop-opacity=".1"/>
-            </linearGradient>
-            <clipPath id="r">
-                <rect width="{total_width}" height="{badge_height}" rx="3" fill="#fff"/>
-            </clipPath>
-            <g clip-path="url(#r)">
-                <rect width="{label_rect_width}" height="{badge_height}" fill="{label_color}"/>
-                <rect x="{label_rect_width}" width="{message_rect_width}" height="{badge_height}" fill="{message_color}"/>
-                <rect width="{total_width}" height="{badge_height}" fill="url(#s)"/>
-            </g>
-            <g fill="#fff" text-anchor="middle" font-family="{font_family}" text-rendering="geometricPrecision" font-size="{font_size_scaled}">
-                <text aria-hidden="true" x="{label_x_scaled}" y="150" fill="#010101" fill-opacity=".3" transform="scale(.1)" textLength="{label_text_length_scaled}">{label}</text>
-                <text x="{label_x_scaled}" y="140" transform="scale(.1)" fill="#fff" textLength="{label_text_length_scaled}">{label}</text>
-                <text aria-hidden="true" x="{message_x_scaled}" y="150" fill="#010101" fill-opacity=".3" transform="scale(.1)" textLength="{message_text_length_scaled}">{message}</text>
-                <text x="{message_x_scaled}" y="140" transform="scale(.1)" fill="#fff" textLength="{message_text_length_scaled}">{message}</text>
-            </g>
-        </svg>"##,
-        total_width = total_width,
-        badge_height = BADGE_HEIGHT,
-        label = label,     // Use function args
-        message = message, // Use function args
-        label_rect_width = label_rect_width,
-        message_rect_width = message_rect_width,
-        label_color = label_color,     // Use function args
-        message_color = message_color, // Use function args
-        font_family = FONT_FAMILY,
-        font_size_scaled = FONT_SIZE_SCALED,
-        label_x_scaled = label_x_scaled,
-        message_x_scaled = message_x_scaled,
-        label_text_length_scaled = label_text_length_scaled,
-        message_text_length_scaled = message_text_length_scaled,
-    )
-}
-
-// Social Style Specific Constants
-const SOCIAL_FONT_FAMILY: &str = "Helvetica Neue,Helvetica,Arial,sans-serif";
-const SOCIAL_FONT_WEIGHT: u32 = 700;
-const SOCIAL_FONT_SIZE_SCALED: u32 = 110; // 11px
-const SOCIAL_STROKE_COLOR: &str = "#d5d5d5";
-const SOCIAL_LABEL_BG_COLOR: &str = "#fcfcfc";
-const SOCIAL_MESSAGE_BG_COLOR: &str = "#fafafa";
-const SOCIAL_TEXT_COLOR: &str = "#333";
-const SOCIAL_HORIZONTAL_PADDING: u32 = 6; // Padding within each part
-const SOCIAL_GAP: u32 = 6; // Gap between label and message parts for the arrow
-
-fn generate_social_style_svg(
-    label: &str,
-    message: &str,
-    _label_color: &str,
-    _message_color: &str,
-) -> String {
-    // Note: _label_color and _message_color are ignored for social style, using fixed colors.
-    let badge_height: u32 = BADGE_HEIGHT; // 20
-    let rect_height: u32 = badge_height - 1; // 19 (for 0.5px offset)
-    let corner_radius: u32 = 2; // Social style uses slightly rounded corners
-
-    // Calculate text widths using the font metrics module
-    let label_text_render_width = font_metrics::get_text_width_px(label, SOCIAL_FONT_FAMILY);
-    let message_text_render_width = font_metrics::get_text_width_px(message, SOCIAL_FONT_FAMILY);
-
-    // Calculate dimensions of the two main parts
-    let label_part_width = label_text_render_width + 2 * SOCIAL_HORIZONTAL_PADDING;
-    let message_part_width = message_text_render_width + 2 * SOCIAL_HORIZONTAL_PADDING;
-
-    // Calculate overall width and positioning
-    // total_width = label_width + gap + message_width (using dimensions for positioning)
-    let message_rect_start_x = label_part_width + SOCIAL_GAP;
-    // Final SVG width needs to encompass everything including the 0.5 offsets
-    let total_width = (message_rect_start_x + message_part_width) as f32 + 0.5f32; // Add 0.5 for the right edge offset
-    let total_width_rounded = total_width.ceil() as u32; // Round up for SVG width attribute
-
-    // --- Calculate Text Positioning (Scaled * 10) ---
-    // Label text X: Center of the label part
-    let label_text_x_scaled = (label_part_width as f32 / 2.0 * 10.0).round() as u32;
-    // Message text X: Center of the message part (relative to SVG start)
-    let message_text_x_scaled =
-        ((message_rect_start_x as f32 + message_part_width as f32 / 2.0) * 10.0).round() as u32;
-    // Text Y positions (scaled * 10)
-    let text_y_main_scaled = 140; // 14px from top in 20px height
-    let text_y_shadow_scaled = text_y_main_scaled + 10; // 15px from top
-                                                        // Scaled text lengths
-    let label_text_length_scaled = label_text_render_width * 10;
-    let message_text_length_scaled = message_text_render_width * 10;
-
-    // Generate the SVG string based on the provided example structure
-    format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{total_width_rounded}" height="{badge_height}" role="img" aria-label="{label}: {message}">
-            <title>{label}: {message}</title>
-            <style>a:hover #llink{{fill:url(#b);stroke:#ccc}}a:hover #rlink{{fill:#4183c4}}</style>
-            <linearGradient id="a" x2="0" y2="100%">
-                <stop offset="0" stop-color="#fcfcfc" stop-opacity="0"/>
-                <stop offset="1" stop-opacity=".1"/>
-            </linearGradient>
-            <linearGradient id="b" x2="0" y2="100%">
-                <stop offset="0" stop-color="#ccc" stop-opacity=".1"/>
-                <stop offset="1" stop-opacity=".1"/>
-            </linearGradient>
-            <g stroke="{stroke_color}">
-                <rect stroke="none" fill="{label_bg_color}" x="0.5" y="0.5" width="{label_part_width}" height="{rect_height}" rx="{corner_radius}"/>
-                <rect x="{message_part_start_x_pos}" y="0.5" width="{message_part_width}" height="{rect_height}" rx="{corner_radius}" fill="{message_bg_color}"/>
-                <rect x="{divider_x}" y="7.5" width="0.5" height="5" stroke="{message_bg_color}"/>
-                <path d="M{arrow_start_x} 6.5 l-3 3v1 l3 3" stroke="{stroke_color}" fill="{message_bg_color}"/> 
-            </g>
-            <g aria-hidden="true" fill="{text_color}" text-anchor="middle" font-family="{font_family}" text-rendering="geometricPrecision" font-weight="{font_weight}" font-size="{font_size_scaled}px" line-height="14px">
-                <rect id="llink" stroke="{stroke_color}" fill="url(#a)" x=".5" y=".5" width="{label_part_width}" height="{rect_height}" rx="{corner_radius}"/>
-                <text aria-hidden="true" x="{label_text_x_scaled}" y="{text_y_shadow_scaled}" fill="#fff" transform="scale(.1)" textLength="{label_text_length_scaled}">{label}</text>
-                <text x="{label_text_x_scaled}" y="{text_y_main_scaled}" transform="scale(.1)" textLength="{label_text_length_scaled}">{label}</text>
-                <text aria-hidden="true" x="{message_text_x_scaled}" y="{text_y_shadow_scaled}" fill="#fff" transform="scale(.1)" textLength="{message_text_length_scaled}">{message}</text>
-                <text id="rlink" x="{message_text_x_scaled}" y="{text_y_main_scaled}" transform="scale(.1)" textLength="{message_text_length_scaled}">{message}</text>
-            </g>
-        </svg>"##,
-        // Dimensions & Positions
-        total_width_rounded = total_width_rounded,
-        badge_height = badge_height,
-        rect_height = rect_height,
-        label_part_width = label_part_width,
-        message_part_width = message_part_width,
-        message_part_start_x_pos = message_rect_start_x as f32 - 0.2, // For rect x attribute
-        divider_x = message_rect_start_x,                             // For divider rect
-        arrow_start_x = message_rect_start_x,                         // For path M command
-        corner_radius = corner_radius,
-        // Colors
-        stroke_color = SOCIAL_STROKE_COLOR,
-        label_bg_color = SOCIAL_LABEL_BG_COLOR,
-        message_bg_color = SOCIAL_MESSAGE_BG_COLOR,
-        text_color = SOCIAL_TEXT_COLOR,
-        // Font & Text Attributes
-        font_family = SOCIAL_FONT_FAMILY,
-        font_weight = SOCIAL_FONT_WEIGHT,
-        font_size_scaled = SOCIAL_FONT_SIZE_SCALED,
-        label = label,
-        message = message,
-        label_text_x_scaled = label_text_x_scaled,
-        message_text_x_scaled = message_text_x_scaled,
-        text_y_main_scaled = text_y_main_scaled,
-        text_y_shadow_scaled = text_y_shadow_scaled,
-        label_text_length_scaled = label_text_length_scaled,
-        message_text_length_scaled = message_text_length_scaled,
-    )
-}
-
-// --- SVG Generation Function for "Flat Square" Style ---
-fn generate_flat_square_style_svg(
-    label: &str,
-    message: &str,
-    label_color: &str,
-    message_color: &str,
-) -> String {
-    // Uses default BADGE_HEIGHT = 20
-    let badge_height = BADGE_HEIGHT;
-
-    // Calculate SVG dimensions based on text using the font metrics module
-    let label_text_render_width = font_metrics::get_text_width_px(label, FONT_FAMILY);
-    let message_text_render_width = font_metrics::get_text_width_px(message, FONT_FAMILY);
-
-    let label_rect_width = label_text_render_width + 2 * HORIZONTAL_PADDING;
-    let message_rect_width = message_text_render_width + 2 * HORIZONTAL_PADDING;
-    let total_width = label_rect_width + message_rect_width;
-
-    // Calculate text positioning (using scaled coordinates)
-    let label_x_scaled = (label_rect_width / 2) * 10;
-    let message_x_scaled = (label_rect_width + message_rect_width / 2) * 10;
-    let label_text_length_scaled = label_text_render_width * 10;
-    let message_text_length_scaled = message_text_render_width * 10;
-
-    // Y position for text (scaled) - same as flat
-    let text_y_scaled = 140; // Corresponds to 14px from top in a 20px badge
-    let shadow_text_y_scaled = text_y_scaled + 10; // 1px lower
-
-    // Generate the SVG string - Note rx="0" in clipPath
-    format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="{total_width}" height="{badge_height}" role="img" aria-label="{label}: {message}">
-            <title>{label}: {message}</title>
-            <linearGradient id="s" x2="0" y2="100%">
-                <stop offset="0" stop-color="#bbb" stop-opacity=".1"/>
-                <stop offset="1" stop-opacity=".1"/>
-            </linearGradient>
-            <clipPath id="r">
-                <rect width="{total_width}" height="{badge_height}" rx="0" fill="#fff"/> 
-            </clipPath>
-            <g clip-path="url(#r)">
-                <rect width="{label_rect_width}" height="{badge_height}" fill="{label_color}"/>
-                <rect x="{label_rect_width}" width="{message_rect_width}" height="{badge_height}" fill="{message_color}"/>
-                <rect width="{total_width}" height="{badge_height}" fill="url(#s)"/>
-            </g>
-            <g fill="#fff" text-anchor="middle" font-family="{font_family}" text-rendering="geometricPrecision" font-size="{font_size_scaled}">
-                <text aria-hidden="true" x="{label_x_scaled}" y="{shadow_text_y_scaled}" fill="#010101" fill-opacity=".3" transform="scale(.1)" textLength="{label_text_length_scaled}">{label}</text>
-                <text x="{label_x_scaled}" y="{text_y_scaled}" transform="scale(.1)" fill="#fff" textLength="{label_text_length_scaled}">{label}</text>
-                <text aria-hidden="true" x="{message_x_scaled}" y="{shadow_text_y_scaled}" fill="#010101" fill-opacity=".3" transform="scale(.1)" textLength="{message_text_length_scaled}">{message}</text>
-                <text x="{message_x_scaled}" y="{text_y_scaled}" transform="scale(.1)" fill="#fff" textLength="{message_text_length_scaled}">{message}</text>
-            </g>
-        </svg>"##,
-        total_width = total_width,
-        badge_height = badge_height,
-        label = label,
-        message = message,
-        label_rect_width = label_rect_width,
-        message_rect_width = message_rect_width,
-        label_color = label_color,
-        message_color = message_color,
-        font_family = FONT_FAMILY,
-        font_size_scaled = FONT_SIZE_SCALED,
-        label_x_scaled = label_x_scaled,
-        message_x_scaled = message_x_scaled,
-        shadow_text_y_scaled = shadow_text_y_scaled,
-        text_y_scaled = text_y_scaled,
-        label_text_length_scaled = label_text_length_scaled,
-        message_text_length_scaled = message_text_length_scaled,
-    )
-}
-
-// --- SVG Generation Function for "Plastic" Style ---
-fn generate_plastic_style_svg(
-    label: &str,
-    message: &str,
-    label_color: &str,
-    message_color: &str,
-) -> String {
-    let badge_height = BADGE_HEIGHT;
-    let corner_radius = 3; // Standard rounded corner for plastic
-
-    // Calculate SVG dimensions based on text using the font metrics module
-    let label_text_render_width = font_metrics::get_text_width_px(label, FONT_FAMILY);
-    let message_text_render_width = font_metrics::get_text_width_px(message, FONT_FAMILY);
-
-    // Padding might be slightly different visually, but let's keep HORIZONTAL_PADDING = 6 for now
-    let label_rect_width = label_text_render_width + 2 * HORIZONTAL_PADDING;
-    let message_rect_width = message_text_render_width + 2 * HORIZONTAL_PADDING;
-    let total_width = label_rect_width + message_rect_width;
-
-    // Calculate text positioning (using scaled coordinates)
-    let label_x_scaled = (label_rect_width / 2) * 10;
-    let message_x_scaled = (label_rect_width + message_rect_width / 2) * 10;
-    let label_text_length_scaled = label_text_render_width * 10;
-    let message_text_length_scaled = message_text_render_width * 10;
-
-    // Y position for text (scaled) - Adjust for 18px height if needed, 140 often still looks ok.
-    // 14px from top in 18px height. Let's try 135 for slightly higher.
-    let text_y_scaled = 135;
-    let shadow_text_y_scaled = text_y_scaled + 10; // 1px lower
-
-    // Generate the SVG string - Note different structure
-    format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{total_width}" height="{badge_height}" role="img" aria-label="{label}: {message}">
-            <title>{label}: {message}</title>
-            <linearGradient id="a" x2="0" y2="100%">
-                <stop offset="0" stop-color="#fff" stop-opacity=".7"/>
-                <stop offset=".1" stop-color="#aaa" stop-opacity=".1"/>
-                <stop offset=".9" stop-color="#000" stop-opacity=".3"/>
-                <stop offset="1" stop-color="#000" stop-opacity=".5"/>
-            </linearGradient>
-            <clipPath id="r">
-                <rect width="{total_width}" height="{badge_height}" rx="{corner_radius}" fill="#fff"/>
-            </clipPath>
-            <g clip-path="url(#r)">
-                <rect width="{label_rect_width}" height="{badge_height}" fill="{label_color}"/>
-                <rect x="{label_rect_width}" width="{message_rect_width}" height="{badge_height}" fill="{message_color}"/>
-                <rect width="{total_width}" height="{badge_height}" fill="url(#a)"/>
-            </g>
-            <g fill="#fff" text-anchor="middle" font-family="{font_family}" text-rendering="geometricPrecision" font-size="{font_size_scaled}">
-                <text aria-hidden="true" x="{label_x_scaled}" y="{shadow_text_y_scaled}" fill="#111" fill-opacity=".3" transform="scale(.1)" textLength="{label_text_length_scaled}">{label}</text>
-                <text x="{label_x_scaled}" y="{text_y_scaled}" transform="scale(.1)" fill="#fff" textLength="{label_text_length_scaled}">{label}</text>
-                <text aria-hidden="true" x="{message_x_scaled}" y="{shadow_text_y_scaled}" fill="#111" fill-opacity=".3" transform="scale(.1)" textLength="{message_text_length_scaled}">{message}</text>
-                <text x="{message_x_scaled}" y="{text_y_scaled}" transform="scale(.1)" fill="#fff" textLength="{message_text_length_scaled}">{message}</text>
-            </g>
-        </svg>"##,
-        total_width = total_width,
-        badge_height = badge_height,
-        corner_radius = corner_radius,
-        label = label,
-        message = message,
-        label_rect_width = label_rect_width,
-        message_rect_width = message_rect_width,
-        label_color = label_color,
-        message_color = message_color,
-        font_family = FONT_FAMILY,
-        font_size_scaled = FONT_SIZE_SCALED,
-        label_x_scaled = label_x_scaled,
-        message_x_scaled = message_x_scaled,
-        shadow_text_y_scaled = shadow_text_y_scaled,
-        text_y_scaled = text_y_scaled,
-        label_text_length_scaled = label_text_length_scaled,
-        message_text_length_scaled = message_text_length_scaled,
-    )
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
