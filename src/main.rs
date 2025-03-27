@@ -28,6 +28,9 @@ use serde::{Deserialize, Serialize};
 use utoipa::OpenApi;
 use utoipa_rapidoc::RapiDoc;
 
+// --- Font Metrics Module ---
+mod font_metrics;
+
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 // --- Type alias for the broadcast sender ---
@@ -382,19 +385,6 @@ const FONT_FAMILY: &str = "Verdana,Geneva,DejaVu Sans,sans-serif";
 const FONT_SIZE_SCALED: u32 = 110; // Corresponds to font-size="11" with transform="scale(.1)"
 const LABEL_COLOR: &str = "#555"; // Left side background
 const MESSAGE_COLOR: &str = "#007ec6"; // Right side background (blue)
-                                       // Rough approximation for character width in pixels for the chosen font style at font-size 11.
-                                       // This is the most inaccurate part and might need tuning or a proper font metrics library.
-const LABEL_PX_PER_CHAR: f32 = 6.0;
-const MESSAGE_PX_PER_CHAR: f32 = 6.0;
-
-/// Estimates the rendered width of a text string based on a simple character count.
-/// This is a basic approximation.
-fn estimate_text_width(text: &str, px_per_char: f32) -> u32 {
-    // Ensure minimum width to avoid overly squashed text for very short strings or single chars
-    const MIN_WIDTH: u32 = 5; // Example minimum width, adjust as needed
-    let estimated = (text.chars().count() as f32 * px_per_char).ceil() as u32;
-    estimated.max(MIN_WIDTH)
-}
 
 // --- Struct for Query Parameters ---
 #[derive(Deserialize, Debug)]
@@ -491,9 +481,9 @@ fn generate_flat_style_svg(
     label_color: &str,
     message_color: &str,
 ) -> String {
-    // Calculate SVG dimensions based on text
-    let label_text_render_width = estimate_text_width(label, LABEL_PX_PER_CHAR);
-    let message_text_render_width = estimate_text_width(message, MESSAGE_PX_PER_CHAR);
+    // Calculate SVG dimensions based on text using the font metrics module
+    let label_text_render_width = font_metrics::get_text_width_px(label, FONT_FAMILY);
+    let message_text_render_width = font_metrics::get_text_width_px(message, FONT_FAMILY);
 
     let label_rect_width = label_text_render_width + 2 * HORIZONTAL_PADDING;
     let message_rect_width = message_text_render_width + 2 * HORIZONTAL_PADDING;
@@ -555,8 +545,6 @@ const SOCIAL_MESSAGE_BG_COLOR: &str = "#fafafa";
 const SOCIAL_TEXT_COLOR: &str = "#333";
 const SOCIAL_HORIZONTAL_PADDING: u32 = 6; // Padding within each part
 const SOCIAL_GAP: u32 = 6; // Gap between label and message parts for the arrow
-const SOCIAL_LABEL_PX_PER_CHAR: f32 = 6.0;
-const SOCIAL_MESSAGE_PX_PER_CHAR: f32 = 6.0;
 
 fn generate_social_style_svg(
     label: &str,
@@ -569,9 +557,9 @@ fn generate_social_style_svg(
     let rect_height: u32 = badge_height - 1; // 19 (for 0.5px offset)
     let corner_radius: u32 = 2; // Social style uses slightly rounded corners
 
-    // Calculate text widths using specific constants for social style font
-    let label_text_render_width = estimate_text_width(label, SOCIAL_LABEL_PX_PER_CHAR);
-    let message_text_render_width = estimate_text_width(message, SOCIAL_MESSAGE_PX_PER_CHAR);
+    // Calculate text widths using the font metrics module
+    let label_text_render_width = font_metrics::get_text_width_px(label, SOCIAL_FONT_FAMILY);
+    let message_text_render_width = font_metrics::get_text_width_px(message, SOCIAL_FONT_FAMILY);
 
     // Calculate dimensions of the two main parts
     let label_part_width = label_text_render_width + 2 * SOCIAL_HORIZONTAL_PADDING;
@@ -581,7 +569,7 @@ fn generate_social_style_svg(
     // total_width = label_width + gap + message_width (using dimensions for positioning)
     let message_rect_start_x = label_part_width + SOCIAL_GAP;
     // Final SVG width needs to encompass everything including the 0.5 offsets
-    let total_width = (message_rect_start_x + message_part_width) as f32 + 0.5; // Add 0.5 for the right edge offset
+    let total_width = (message_rect_start_x + message_part_width) as f32 + 0.5f32; // Add 0.5 for the right edge offset
     let total_width_rounded = total_width.ceil() as u32; // Round up for SVG width attribute
 
     // --- Calculate Text Positioning (Scaled * 10) ---
@@ -664,9 +652,9 @@ fn generate_flat_square_style_svg(
     // Uses default BADGE_HEIGHT = 20
     let badge_height = BADGE_HEIGHT;
 
-    // Calculate SVG dimensions based on text
-    let label_text_render_width = estimate_text_width(label, LABEL_PX_PER_CHAR);
-    let message_text_render_width = estimate_text_width(message, MESSAGE_PX_PER_CHAR);
+    // Calculate SVG dimensions based on text using the font metrics module
+    let label_text_render_width = font_metrics::get_text_width_px(label, FONT_FAMILY);
+    let message_text_render_width = font_metrics::get_text_width_px(message, FONT_FAMILY);
 
     let label_rect_width = label_text_render_width + 2 * HORIZONTAL_PADDING;
     let message_rect_width = message_text_render_width + 2 * HORIZONTAL_PADDING;
@@ -734,9 +722,9 @@ fn generate_plastic_style_svg(
     let badge_height = BADGE_HEIGHT;
     let corner_radius = 3; // Standard rounded corner for plastic
 
-    // Calculate SVG dimensions based on text
-    let label_text_render_width = estimate_text_width(label, LABEL_PX_PER_CHAR);
-    let message_text_render_width = estimate_text_width(message, MESSAGE_PX_PER_CHAR);
+    // Calculate SVG dimensions based on text using the font metrics module
+    let label_text_render_width = font_metrics::get_text_width_px(label, FONT_FAMILY);
+    let message_text_render_width = font_metrics::get_text_width_px(message, FONT_FAMILY);
 
     // Padding might be slightly different visually, but let's keep HORIZONTAL_PADDING = 6 for now
     let label_rect_width = label_text_render_width + 2 * HORIZONTAL_PADDING;
