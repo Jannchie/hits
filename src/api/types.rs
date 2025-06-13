@@ -22,7 +22,7 @@ pub struct ShieldsIoBadge {
 }
 
 // --- HitBadgeParams 及默认值函数 ---
-use crate::badge::BadgeStyle;
+use shields::BadgeStyle;
 
 /// serde 默认值函数
 pub fn default_label() -> String {

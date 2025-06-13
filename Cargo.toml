@@ -9,10 +9,11 @@ description = "A simple web server for counting hits."
 anyhow = "1.0.97"
 axum = { version = "0.8.1", features = ["ws"] }
 chrono = "0.4.40"
-dotenv = "0.15.0"
-fontdue = "0.8.0"
+dotenvy = "0.15.7"
+fontdue = "0.9.3"
 futures-util = "0.3.31"
 serde = "1.0.219"
+shields = { version = "0.5.1" }
 sqlx = { version = "0.8.3", features = [
     "runtime-tokio-native-tls",
     "postgres",

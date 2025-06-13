@@ -1,17 +1,20 @@
 use utoipa::OpenApi;
 
-use crate::api::types::{ApiError, AppInfo, HitBadgeParams, ShieldsIoBadge};
-use crate::badge::{render_badge_svg, RenderBadgeParams};
+use crate::api::types::{ApiError, AppInfo, ShieldsIoBadge};
 use crate::error::AppError;
 use axum::{
-    extract::{Extension, Path, Query},
-    http::{header, HeaderMap, HeaderValue, StatusCode},
-    response::{IntoResponse, Response},
+    extract::{Extension, Path},
+    http::{header, HeaderValue, StatusCode},
+    response::IntoResponse,
     Json,
 };
+use shields::render_badge_svg;
 use sqlx::postgres::PgPool;
 use std::sync::Arc;
 use tokio::sync::broadcast;
+
+use crate::api::types::HitBadgeParams;
+use axum::{extract::Query, http::HeaderMap, response::Response};
 
 /// OpenAPI 文档结构体
 #[derive(OpenApi)]
@@ -178,14 +181,20 @@ pub async fn direct_svg_badge_route(
 ) -> Result<Response, AppError> {
     let total_count = increase_and_get_count(pool, key.clone(), broadcaster).await;
     let message_text = total_count.to_string();
-    let svg_generate_params = RenderBadgeParams {
+
+    // let svg_generate_params = Builder::flat(){
+    let svg_string = render_badge_svg(&shields::BadgeParams {
         style: params.style,
-        label: params.label.as_str(),
+        label: Some(params.label.as_str()),
         message: message_text.as_str(),
-        label_color: params.label_color.as_str(),
+        label_color: Some(params.label_color.as_str()),
         message_color: params.message_color.as_str(),
-    };
-    let svg_string = render_badge_svg(svg_generate_params);
+        // 填充所有必需字段，若有 Option 字段用 None，&str 字段用 ""，数值用默认
+        link: None,
+        extra_link: None,
+        logo: None,
+        logo_color: None,
+    });
     let mut headers = HeaderMap::new();
     headers.insert(
         header::CONTENT_TYPE,

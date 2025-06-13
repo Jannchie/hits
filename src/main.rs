@@ -1,12 +1,10 @@
 use anyhow::{Context, Result};
-use dotenv::dotenv;
+use dotenvy::dotenv;
 use sqlx::postgres::PgPool;
 use std::{env, net::SocketAddr, sync::Arc};
 use tokio::sync::broadcast;
 use tracing::info;
 
-mod badge;
-mod font_metrics;
 mod api;
 mod error;
 
