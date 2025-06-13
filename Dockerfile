@@ -1,5 +1,5 @@
 # Use the latest stable Rust image as the base image for building the application
-FROM rust:1.85 AS builder
+FROM rust:1.87 AS builder
 
 # Set the working directory inside the container
 WORKDIR /usr/src/hits
