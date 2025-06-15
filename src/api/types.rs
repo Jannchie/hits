@@ -1,7 +1,7 @@
 //! API 相关类型定义
 
-use serde::{Serialize, Deserialize};
-use utoipa::ToSchema;
+use serde::{Deserialize, Serialize};
+use utoipa::{IntoParams, ToSchema};
 
 /// API 错误响应结构体
 #[derive(Serialize, ToSchema)]
@@ -18,15 +18,25 @@ pub struct ShieldsIoBadge {
     pub label: String,      // The left side of the badge
     pub message: String,    // The right side of the badge (the count)
     pub color: String,      // e.g., "blue", "green", hex codes like "ff69b4"
-    // Optional: Add fields like `labelColor`, `isError`, `namedLogo`, `logoSvg`, `logoColor`, `logoWidth`, `logoPosition`, `style`, `cacheSeconds` if needed
+                            // Optional: Add fields like `labelColor`, `isError`, `namedLogo`, `logoSvg`, `logoColor`, `logoWidth`, `logoPosition`, `style`, `cacheSeconds` if needed
 }
 
-// --- HitBadgeParams 及默认值函数 ---
-use shields::BadgeStyle;
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum BadgeStyle {
+    Flat,
+    FlatSquare,
+    Plastic,
+    Social,
+    ForTheBadge,
+}
 
-/// serde 默认值函数
 pub fn default_label() -> String {
     "Hits".to_string()
+}
+
+pub fn default_badge_style() -> BadgeStyle {
+    BadgeStyle::Flat
 }
 pub fn default_label_color() -> String {
     "#555".to_string()
@@ -35,21 +45,38 @@ pub fn default_message_color() -> String {
     "#007ec6".to_string()
 }
 
-/// SVG 徽章参数
-#[derive(Deserialize, Debug)]
+/// 用于生成 Hit Badge 的参数
+#[derive(Debug, Deserialize, ToSchema, IntoParams)]
 pub struct HitBadgeParams {
-    #[serde(default)]
+    /// The style of the badge
+    #[serde(default = "default_badge_style")]
     pub style: BadgeStyle,
+
+    /// The label text on the left side of the badge
     #[serde(default = "default_label")]
     pub label: String,
+
+    /// The color of the label text
     #[serde(default = "default_label_color")]
     pub label_color: String,
+
+    /// The message text on the right side of the badge
     #[serde(default = "default_message_color")]
     pub message_color: String,
+
+    /// The link to the badge (optional)
+    pub link: Option<String>,
+
+    pub extra_link: Option<String>,
+
+    /// The logo to display on the badge
+    pub logo: Option<String>,
+
+    /// The width of the logo in pixels
+    pub logo_color: Option<String>,
 }
 
-/// 应用信息结构体
-#[derive(Serialize, utoipa::ToSchema)]
+#[derive(Serialize, ToSchema)]
 pub struct AppInfo {
     pub project_name: String,
     pub version: String,

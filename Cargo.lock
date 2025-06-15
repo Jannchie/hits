@@ -1881,9 +1881,9 @@ dependencies = [
 
 [[package]]
 name = "shields"
-version = "0.5.1"
+version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b670f1d215d1b9646abf9a24fd514f9b190d1a3ebc38cfad494da48a819acd67"
+checksum = "2c064bbeae8d91cc7a84f1c4bb1232865196c904a956a610f05a5397244f4ba8"
 dependencies = [
  "askama",
  "base64",

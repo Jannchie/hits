@@ -1,6 +1,6 @@
 use utoipa::OpenApi;
 
-use crate::api::types::{ApiError, AppInfo, ShieldsIoBadge};
+use crate::api::types::{ApiError, AppInfo, BadgeStyle, ShieldsIoBadge};
 use crate::error::AppError;
 use axum::{
     extract::{Extension, Path},
@@ -20,7 +20,7 @@ use axum::{extract::Query, http::HeaderMap, response::Response};
 #[derive(OpenApi)]
 #[openapi(
     components(
-        schemas(ApiError, AppInfo, ShieldsIoBadge)
+        schemas(BadgeStyle)
     ),
     tags(
         (name = "Meta", description = "Meta API Endpoints"),
@@ -161,11 +161,7 @@ pub async fn shields_badge_route(
     summary = "Get Total Hits as an SVG Badge with Style Options",
     description = "Retrieves the total count for the given key, increments it, and returns it as an SVG badge. Supports different visual styles via the `style` query parameter (e.g., 'flat', 'social'). Includes Cache-Control headers.",
     params(
-        ("key" = String, Path, description = "The unique key for the counter."),
-        ("style" = Option<String>, Query, description = "Optional badge style (e.g., 'flat', 'social'). Defaults to 'flat'."),
-        ("label" = Option<String>, Query, description = "Optional label text for the badge. Defaults to 'Hits'."),
-        ("label_color" = Option<String>, Query, description = "Optional label color in hex format. Defaults to '#555'."),
-        ("message_color" = Option<String>, Query, description = "Optional message color in hex format. Defaults to '#007ec6'."),
+        HitBadgeParams
     ),
     responses(
         (status = 200, description = "Successfully generated and returned the SVG badge.", content_type = "image/svg+xml", body = String),
@@ -181,19 +177,24 @@ pub async fn direct_svg_badge_route(
 ) -> Result<Response, AppError> {
     let total_count = increase_and_get_count(pool, key.clone(), broadcaster).await;
     let message_text = total_count.to_string();
-
+    let style = match params.style {
+        BadgeStyle::Flat => shields::BadgeStyle::Flat,
+        BadgeStyle::FlatSquare => shields::BadgeStyle::FlatSquare,
+        BadgeStyle::Plastic => shields::BadgeStyle::Plastic,
+        BadgeStyle::Social => shields::BadgeStyle::Social,
+        BadgeStyle::ForTheBadge => shields::BadgeStyle::ForTheBadge,
+    };
     // let svg_generate_params = Builder::flat(){
     let svg_string = render_badge_svg(&shields::BadgeParams {
-        style: params.style,
+        style,
         label: Some(params.label.as_str()),
-        message: message_text.as_str(),
+        message: Some(message_text.as_str()),
         label_color: Some(params.label_color.as_str()),
-        message_color: params.message_color.as_str(),
-        // 填充所有必需字段，若有 Option 字段用 None，&str 字段用 ""，数值用默认
-        link: None,
-        extra_link: None,
-        logo: None,
-        logo_color: None,
+        message_color: Some(params.message_color.as_str()),
+        link: params.link.as_deref(),
+        extra_link: params.extra_link.as_deref(),
+        logo: params.logo.as_deref(),
+        logo_color: params.logo_color.as_deref(),
     });
     let mut headers = HeaderMap::new();
     headers.insert(
